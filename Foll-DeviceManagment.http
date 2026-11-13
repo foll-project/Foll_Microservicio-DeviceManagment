@@ -1,0 +1,30 @@
+@baseUrl = http://localhost:5256
+@jwt = REEMPLAZAR_JWT_DE_IAM
+@serviceKey = REEMPLAZAR_CLAVE_INTERNA
+
+### Care backend: agregar estado al paciente. Care autoriza a su usuario antes de llamar.
+GET {{baseUrl}}/internal/devices/patient/25/status
+X-Foll-Service-Key: {{serviceKey}}
+
+### Consulta pública (requiere cuidador principal, como v2)
+GET {{baseUrl}}/api/devices/patient/25
+Authorization: Bearer {{jwt}}
+
+### Vincular desde la app o backend Care que reenvía el JWT
+POST {{baseUrl}}/api/devices/1001/link
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+
+{ "patientId": 25 }
+
+### Desvinculación explícita; no implica flujo de paciente eliminado
+DELETE {{baseUrl}}/api/devices/1001/link
+Authorization: Bearer {{jwt}}
+
+### Estado por dispositivo
+GET {{baseUrl}}/api/devices/1001/status
+Authorization: Bearer {{jwt}}
+
+### EmergencyAnalytics: asignación
+GET {{baseUrl}}/internal/devices/1001/assignment
+X-Foll-Service-Key: {{serviceKey}}

@@ -1,0 +1,43 @@
+using DeviceEntity = foll_device_managment.DeviceManagment.Domain.Model.Entities.Device;
+using foll_device_managment.DeviceManagment.Domain.Repositories;
+using foll_device_managment.Shared.Infrastructure.Persistence.EFC.Configuration;
+using foll_device_managment.Shared.Infrastructure.Persistence.EFC.Repositories;
+using Microsoft.EntityFrameworkCore;
+
+namespace foll_device_managment.DeviceManagment.Infrastructure.Persistence.EFC.Repositories;
+
+public class DeviceRepository : BaseRepository<DeviceEntity>, IDeviceRepository
+{
+    public DeviceRepository(AppDbContext context) : base(context)
+    {
+    }
+
+    public async Task<DeviceEntity?> FindByAssignedPatientIdAsync(long patientId)
+    {
+        if (patientId <= 0) return null;
+
+        return await Context.Set<DeviceEntity>()
+            .FirstOrDefaultAsync(d => d.AssignedPatientId == patientId);
+    }
+
+    public async Task<IEnumerable<DeviceEntity>> FindByPatientIdsAsync(IEnumerable<long> patientIds)
+    {
+        if (patientIds == null || !patientIds.Any()) return Array.Empty<DeviceEntity>();
+
+        return await Context.Set<DeviceEntity>()
+            .Where(d => d.AssignedPatientId.HasValue && patientIds.Contains(d.AssignedPatientId.Value))
+            .ToListAsync();
+    }
+
+    public async Task<IReadOnlyCollection<long>> ListMonitoredActiveDeviceIdsAsync()
+    {
+        return await Context.Set<DeviceEntity>()
+            .Where(d =>
+                d.Status == Domain.Model.Enums.DeviceStatus.Active &&
+                d.AssignedPatientId != null &&
+                d.ConnectivityStatus != null &&
+                d.MonitoringStartedAt != null)
+            .Select(d => d.DeviceId)
+            .ToListAsync();
+    }
+}
