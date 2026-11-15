@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskDll = Join-Path $taskRoot 'bin/Debug/net10.0/Foll-DeviceManagment.dll'
 if (-not (Test-Path -LiteralPath $taskDll)) { throw 'Ejecute dotnet build primero.' }
-$taskArgs = @('"' + $taskDll + '"', '--urls', "http://127.0.0.1:$Port", '--JwtSettings:Secret=smoke-test-only-key-with-at-least-32-bytes', '--InternalApi:ApiKey=smoke-test-only-service-key-32-characters', '--Mqtt:Enabled=false', '--DeviceMonitoring:Enabled=false', '--Telemetry:Enabled=false', '--Outbox:Enabled=false', '--ApplyMigrationsOnStartup=false', '--Swagger:Enabled=true')
+$taskArgs = @('"' + $taskDll + '"', '--urls', "http://127.0.0.1:$Port", '--JwtSettings:Secret=smoke-test-only-key-with-at-least-32-bytes', '--Mqtt:Enabled=false', '--DeviceMonitoring:Enabled=false', '--Telemetry:Enabled=false', '--Outbox:Enabled=false', '--ApplyMigrationsOnStartup=false', '--Swagger:Enabled=true')
 $taskProcess = Start-Process -FilePath 'dotnet' -ArgumentList $taskArgs -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru
 try {
     $taskBase = "http://127.0.0.1:$Port"
@@ -23,7 +23,7 @@ try {
     if (-not $taskSwagger.paths.'/api/devices/{deviceId}/link') { throw 'No está el contrato de vinculación en Swagger.' }
     if (-not $taskSwagger.paths.'/internal/devices/patient/{patientId}/status') { throw 'No está el contrato de Care en Swagger.' }
     if ($taskSwagger.paths.'/internal/devices/patients-deleted') { throw 'Se implementó una ruta de borrado excluida.' }
-    Write-Output 'PASS: arranque real, health/live, protección JWT, protección de servicio y contrato Swagger; workers desactivados y sin migraciones.'
+    Write-Output 'PASS: arranque real, health/live, protección JWT en rutas públicas/internas y contrato Swagger; workers desactivados y sin migraciones.'
 } finally {
     if (-not $taskProcess.HasExited) { Stop-Process -Id $taskProcess.Id -Force }
     $taskProcess.Dispose()

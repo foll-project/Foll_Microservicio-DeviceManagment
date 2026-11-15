@@ -21,11 +21,9 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 var builder = WebApplication.CreateBuilder(args);
 var secret = builder.Configuration["JwtSettings:Secret"];
-var serviceKey = builder.Configuration["InternalApi:ApiKey"];
+
 if (string.IsNullOrWhiteSpace(secret) || Encoding.ASCII.GetByteCount(secret) < 32)
     throw new InvalidOperationException("Configure JwtSettings:Secret de IAM (al menos 32 bytes).");
-if (string.IsNullOrWhiteSpace(serviceKey) || serviceKey.Length < 32)
-    throw new InvalidOperationException("Configure InternalApi:ApiKey con al menos 32 caracteres.");
 builder.Services.AddDbContext<AppDbContext>(options => options
     .UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"), pg => pg.MigrationsHistoryTable("__EFMigrationsHistory", "device"))
     .UseSnakeCaseNamingConvention());
@@ -45,6 +43,11 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "Foll DeviceManagment v2", Version = "v1" });
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme { Name = "Authorization", Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT", In = ParameterLocation.Header });
+    options.AddSecurityDefinition("EmergencyAssignmentKey", new OpenApiSecurityScheme
+    {
+        Name = "X-Foll-Service-Key", Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header,
+        Description = "Llave exclusiva para la consulta de asignación desde EmergencyAnalytics."
+    });
     options.OperationFilter<AuthorizeOperationFilter>();
 });
 builder.Services.Configure<MqttOptions>(builder.Configuration.GetSection("Mqtt"));
@@ -68,12 +71,23 @@ builder.Services.AddScoped<IDeviceStatusAcl, DeviceStatusAcl>();
 builder.Services.AddScoped<DeviceEventDelivery>();
 builder.Services.AddSingleton<LatestTelemetryBuffer>();
 builder.Services.AddSingleton<IDeviceTelemetryRealtimePublisher>(sp => sp.GetRequiredService<LatestTelemetryBuffer>());
-builder.Services.AddHttpClient<IPatientAccessService, PatientAccessGateway>(client => ConfigureClient(client, "Care", false));
-builder.Services.AddHttpClient<IDeviceNotificationGateway, DeviceNotificationGateway>(client => ConfigureClient(client, "Notifications", true));
+builder.Services.AddHttpClient<IPatientAccessService, PatientAccessGateway>(client => ConfigureClient(client, "Care"));
+builder.Services.AddOptions<foll_device_managment.Shared.Infrastructure.Messaging.RabbitMqOptions>().Bind(builder.Configuration.GetSection("RabbitMq"))
+    .Validate(o => !string.IsNullOrWhiteSpace(o.HostName) && o.Port is > 0 and <= 65535 &&
+        !string.IsNullOrWhiteSpace(o.UserName) && !string.IsNullOrWhiteSpace(o.Password) &&
+        !string.IsNullOrWhiteSpace(o.VirtualHost) && !string.IsNullOrWhiteSpace(o.ExchangeName) &&
+        !string.IsNullOrWhiteSpace(o.QueueName) && o.PublishTimeoutSeconds is > 0 and <= 120,
+        "Configuracion RabbitMq incompleta o invalida.").ValidateOnStart();
+builder.Services.AddSingleton<foll_device_managment.Shared.Infrastructure.Messaging.RabbitMqConnection>(sp => new(
+    sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<foll_device_managment.Shared.Infrastructure.Messaging.RabbitMqOptions>>(),
+    DeviceEventDelivery.SupportedTypes.Append(RabbitMqDeviceNotificationPublisher.TelemetryType),
+    sp.GetRequiredService<ILogger<foll_device_managment.Shared.Infrastructure.Messaging.RabbitMqConnection>>()));
+builder.Services.AddSingleton<IDeviceNotificationGateway, RabbitMqDeviceNotificationPublisher>();
 if (builder.Configuration.GetValue("Mqtt:Enabled", true)) builder.Services.AddHostedService<MqttHeartbeatSubscriberBackgroundService>();
 if (builder.Configuration.GetValue("DeviceMonitoring:Enabled", true)) builder.Services.AddHostedService<DeviceConnectivityMonitorBackgroundService>();
 if (builder.Configuration.GetValue("Outbox:Enabled", true)) builder.Services.AddHostedService<OutboxPublisherBackgroundService>();
 if (builder.Configuration.GetValue("Telemetry:Enabled", true)) builder.Services.AddHostedService<TelemetryPublisherBackgroundService>();
+foll_device_managment.Shared.Infrastructure.Messaging.IntegrationConsumerRegistration.AddIntegrationConsumer<foll_device_managment.Shared.Infrastructure.Messaging.AccountDeletionCompletedHandler>(builder.Services, builder.Configuration, "devices.care-account-deletion-completed.v1", foll_device_managment.Shared.Infrastructure.Messaging.AccountDeletionCompleted.EventType);
 var app = builder.Build();
 if (builder.Configuration.GetValue("ApplyMigrationsOnStartup", false))
 {
@@ -93,11 +107,11 @@ app.MapGet("/health/ready", async (AppDbContext db, CancellationToken ct) =>
     catch { return Results.StatusCode(503); }
 });
 app.MapControllers(); app.Run();
-void ConfigureClient(HttpClient client, string name, bool internalAuthentication)
+void ConfigureClient(HttpClient client, string name)
 {
     var url = builder.Configuration[$"Services:{name}:BaseUrl"] ?? throw new InvalidOperationException($"Falta URL de {name}.");
     client.BaseAddress = new Uri(url.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue($"Services:{name}:TimeoutSeconds", 10));
-    if (internalAuthentication) client.DefaultRequestHeaders.Add("X-Foll-Service-Key", serviceKey);
+
 }
 public partial class Program;
