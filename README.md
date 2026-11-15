@@ -1,10 +1,31 @@
+> Actualizacion: se agrega liberacion asincrona de dispositivos por confirmacion de eliminacion de cuenta, segun la decision de eliminar tambien sus pacientes. La exclusion original para borrado individual de pacientes se conserva. Ver [consumidores](docs/rabbitmq-consumers.md).
+
 # Foll — DeviceManagment v2
+
+## Transporte actual de alertas y telemetría — 2026-11-14
+
+Las alertas de outbox y los snapshots de telemetría ahora se publican por RabbitMQ con confirmación, siguiendo la conexión/publicación de Care. Ya no se llama a `/internal/notifications/device-events` ni `/device-telemetry`, y no hay una llave general de Notifications. La cola receptora es `notificationcommunication.device-events.v1`; el routing key de telemetría es `device-managment.telemetry.v1`. La telemetría sigue siendo efímera y no añade outbox.
+
+La consulta de permisos a Care conserva el JWT del usuario. La asignación que consulta Emergency conserva la llave específica acordada. No se cambió la exclusión de Care → Devices por paciente eliminado.
+
+Las secciones de bitácora posteriores describen la extracción previa por HTTP. La suite actual ya no depende de los proxies inexistentes del monolito.
 
 ## Alcance y estado
 
 Extracción de DeviceManagment desde `../foll-backend` v2, siguiendo la organización de Care v1 y EmergencyAnalytics. Proyecto independiente .NET 10; namespace `foll_device_managment`. Este documento registra decisiones, cambios y evidencias durante la implementación.
 
 **Exclusión solicitada por el usuario:** no implementar `Care → Devices: paciente eliminado`. No se creará receptor, emisor, evento ni worker remoto para ese caso. En modo remoto no se ejecutará el antiguo handler local sobre tablas obsoletas. El borrado de pacientes no desvinculará automáticamente los dispositivos del nuevo servicio; se requiere desvinculación explícita mientras esa integración esté pendiente.
+
+
+### Consulta interna de asignación desde Emergency (2026-11-14)
+
+`GET /internal/devices/{deviceId}/assignment` requiere `X-Foll-Service-Key`, con el valor de `InternalApi:EmergencyAssignmentKey` exclusivo de Emergency. Ya no usa JWT de usuario. El emisor configura el mismo valor en `Services:Devices:ApiKey`. La llave no habilita ninguna otra ruta: estado por paciente y APIs de usuario conservan JWT.
+
+Se rechazan credenciales vacías, incorrectas, duplicadas y configuraciones menores de 32 caracteres. Por preferencia de desarrollo local, la llave está directamente en `appsettings.json`, en `InternalApi:EmergencyAssignmentKey`, y coincide con `Services:Devices:ApiKey` en el `appsettings.json` de Emergency. Esas entradas ya no están en `dotnet user-secrets`. Usar HTTPS entre máquinas; en despliegue se puede configurar con `InternalApi__EmergencyAssignmentKey`. Es independiente de `InternalApi:ApiKey` y de `JwtSettings:Secret`.
+
+No publicar `/internal/devices` en el gateway; limitar el puerto mediante red privada o firewall. Los perfiles locales escuchan en `localhost`. No se modificaron reglas de red ni firewall en este cambio.
+
+Las pruebas del contrato están en `../Foll_Microservicio-EmergencyAnalytics/tests/DeviceAssignmentSecurityTests.cs`; usan el controlador real de Devices y el cliente HTTP registrado por Emergency, sin depender de IAM ni PostgreSQL.
 
 ## Propiedad del servicio
 
@@ -15,8 +36,8 @@ flowchart LR
     Edge[Edge / dispositivo] -->|MQTT heartbeat y power| Devices[DeviceManagment :5256]
     Devices --> DB[(BD propia: device)]
     Devices -->|HTTP con JWT: autorizar| Care[Care :5237 o :5245]
-    Care -->|HTTP con clave: estado por paciente| Devices
-    Emergency[EmergencyAnalytics :5255] -->|HTTP con clave: asignación| Devices
+    Care -->|HTTP con JWT: estado por paciente| Devices
+    Emergency[EmergencyAnalytics :5255] -->|HTTP con llave interna: asignación| Devices
     DB --> Outbox[Worker outbox durable]
     Outbox -->|Alertas HTTP con reintentos| Notifications[Notifications en monolito :5237]
     Devices --> Buffer[Buffer efímero acotado]
@@ -34,7 +55,7 @@ Estructura: `DeviceManagment/{Domain,Application,Infrastructure,Interfaces}`, `S
 Se mantienen entidades y contratos públicos v2. Se sustituyen ACL locales por gateways/adaptadores HTTP. No se reduce el dominio al alcance de Care v1. Se usa .NET 10 como en el monolito.
 
 ### ADR-002 — Sincronía por necesidad de negocio
-Care se consulta por HTTP con JWT antes de vincular/desvincular o consultar mediante API pública. La consulta interna de estado para el backend Care y la asignación para Emergency son síncronas, con clave de servicio. Las alertas se entregan desde outbox durable; la telemetría en vivo usa un buffer limitado que reemplaza snapshots antiguos por el más reciente, sin crear una notificación persistente por heartbeat.
+Care se consulta por HTTP con JWT antes de vincular/desvincular o consultar mediante API pública. La consulta interna de estado para el backend Care y la asignación para Emergency son síncronas, con JWT reenviado. Las alertas se entregan desde outbox durable; la telemetría en vivo usa un buffer limitado que reemplaza snapshots antiguos por el más reciente, sin crear una notificación persistente por heartbeat.
 
 ### ADR-003 — Transición opt-in
 El monolito conserva el modo local por defecto. Un flag de modo remoto delegará consultas/REST y detendrá únicamente los workers locales de MQTT y conectividad. Su publicador outbox compartido continuará atendiendo mensajes de otros procesos. No se activará tráfico ni aplicarán migraciones a bases existentes durante esta implementación.
@@ -54,7 +75,7 @@ El monolito conserva el modo local por defecto. Un flag de modo remoto delegará
 - Se crearon proyecto, arranque, configuración sin secretos, Docker .NET 10 y puerto 5256. Contexto propio: devices, device_events y outbox_messages, esquema device.
 - Se conservó el dominio v2; se retiró del servicio el handler/comando de desvinculación por borrado de pacientes. No se agregó una alternativa remota a ese flujo.
 - Gateway a Care: GET device-access con JWT reenviado y comprobación local del cuidador principal, compatible con Care v1 y adaptador del monolito v2.
-- API interna con clave de servicio: estado por paciente y asignación por dispositivo. Diagnóstico protegido y oculto de Swagger.
+- API interna con JWT: estado por paciente y asignación por dispositivo. Diagnóstico protegido y oculto de Swagger.
 - Outbox de alertas HTTP: solo cuatro tipos de dispositivos, ID estable basado en OutboxMessageId, confirmación tras 2xx y parada del lote ante fallo para mantener orden. Requiere una sola réplica publicadora inicialmente.
 - Telemetría: buffer con capacidad y edad máximas, reemplazo por último timestamp por dispositivo y entrega HTTP desde worker separado. No realiza HTTP en el camino de persistencia del heartbeat.
 - Serialización de comandos por dispositivo mediante 256 locks acotados evita carreras MQTT/monitor/REST dentro de una réplica; el índice de paciente único protege asignaciones concurrentes entre dispositivos. No son locks distribuidos.
@@ -102,10 +123,10 @@ Base local: **`http://localhost:5256`**.
 
 ```http
 GET /internal/devices/patient/{patientId}/status
-X-Foll-Service-Key: <clave de servicio compartida>
+Authorization: Bearer <JWT de IAM>
 ```
 
-Esta ruta reemplaza `IDeviceStatusAcl` cuando Care construye su respuesta de paciente. Care debe validar que su usuario puede acceder al paciente **antes** de utilizar la clave de servicio. La clave permanece en el backend, nunca en el navegador/QR/app distribuida. Este contrato permite que Care consulte estado para cuidadores autorizados aunque la API pública v2 conserve acceso solo al cuidador principal.
+Esta ruta reemplaza `IDeviceStatusAcl` cuando Care construye su respuesta de paciente. Care valida que su usuario puede acceder al paciente y reenvía su JWT. Device valida la firma y vigencia del token, sin exigir una clave interna. Este contrato permite que Care consulte estado para cuidadores autorizados aunque la API pública v2 conserve acceso solo al cuidador principal.
 
 Ejemplo 200 (los campos de batería/conexión/fechas pueden ser null):
 
@@ -127,7 +148,7 @@ Ejemplo 200 (los campos de batería/conexión/fechas pueden ser null):
 ```
 
 - `404`: no hay dispositivo vinculado. Care puede mostrar `isLinked=false`.
-- `401`: clave ausente/incorrecta. No interpretar como paciente sin dispositivo.
+- `401`: JWT ausente, inválido o vencido. No interpretar como paciente sin dispositivo.
 - Error de red/5xx/timeout: estado no disponible; no convertirlo en una desvinculación.
 - Care v2 en el monolito ya tiene el adaptador remoto preparado. Care v1 **no fue modificado**: debe incorporar su gateway si quiere enriquecer la respuesta del paciente con estos datos.
 
@@ -140,7 +161,7 @@ Ejemplo 200 (los campos de batería/conexión/fechas pueden ser null):
 | GET | `/api/devices/{deviceId}/status` | Sin cuerpo | JWT del usuario |
 | GET | `/api/devices/patient/{patientId}` | Sin cuerpo | JWT del usuario |
 
-Encabezado: `Authorization: Bearer <JWT de IAM>`. Se preserva la regla v2 de **cuidador principal** para estas cuatro rutas; la clave interna no la sustituye. POST/DELETE devuelven 200 con mensaje, las consultas 200 con estado, 404 si no hay resultado y 400 para errores de negocio capturados por el controlador (como en v2). JWT inválido devuelve 401.
+Encabezado: `Authorization: Bearer <JWT de IAM>`. Se preserva la regla v2 de **cuidador principal** para estas cuatro rutas; el JWT también se utiliza en las rutas internas. POST/DELETE devuelven 200 con mensaje, las consultas 200 con estado, 404 si no hay resultado y 400 para errores de negocio capturados por el controlador (como en v2). JWT inválido devuelve 401.
 
 **Care no debe llamar a ninguna ruta de paciente eliminado:** no existe en este servicio por instrucción expresa. La desvinculación DELETE anterior es una acción explícita del usuario sobre un dispositivo y sí está implementada.
 
@@ -156,9 +177,9 @@ Respuesta: `{ "patientId": 25, "officialGuardianUserId": 7 }`. Care v1 ya tiene 
 ## Otros contratos e interoperabilidad
 
 ### EmergencyAnalytics
-`GET /internal/devices/{deviceId}/assignment`, clave `X-Foll-Service-Key`. Respuesta: `{ "deviceId": 1001, "assignedPatientId": 25, "status": "Active", "connectivityStatus": "Connected" }`; assignedPatientId/conectividad pueden ser null. 404 si no existe el dispositivo. Su forma coincide con el gateway de EmergencyAnalytics existente.
+`GET /internal/devices/{deviceId}/assignment`, encabezado `Authorization: Bearer <JWT de IAM>`. Respuesta: `{ "deviceId": 1001, "assignedPatientId": 25, "status": "Active", "connectivityStatus": "Connected" }`; assignedPatientId/conectividad pueden ser null. 404 si no existe el dispositivo. Su forma coincide con el gateway de EmergencyAnalytics existente.
 
-Para consultar directamente el nuevo servicio, configurar en EmergencyAnalytics `Services__Devices__BaseUrl=http://localhost:5256` y la misma clave interna. También puede conservar :5237: el endpoint de transición del monolito utiliza el ACL remoto cuando se activa el flag. No se cambió automáticamente la URL por defecto de EmergencyAnalytics.
+Para consultar directamente el nuevo servicio, configurar en EmergencyAnalytics `Services__Devices__BaseUrl=http://localhost:5256` y reenviar el JWT de IAM. También puede conservar :5237: el endpoint de transición del monolito utiliza el ACL remoto cuando se activa el flag. No se cambió automáticamente la URL por defecto de EmergencyAnalytics.
 
 ### Notifications
 
@@ -263,3 +284,7 @@ Sin escrituras nuevas en el destino: detener workers nuevos, restaurar configura
 
 ### 2026-11-13 — Cierre de entrega local
 Código extraído y adaptadores preparados; 29 pruebas Devices y 26 de regresión EmergencyAnalytics correctas. El modo remoto sigue desactivado por defecto. La aceptación operacional requiere ejecutar la lista de integración anterior con PostgreSQL/MQTT/proveedores reales. La exclusión Care → Devices por paciente eliminado permanece explícita y sin receptor/emisor implementado.
+
+## Autenticación interna actual
+
+La consulta interna de estado y el diagnóstico requieren JWT de IAM. La consulta de asignación requiere la llave exclusiva `InternalApi:EmergencyAssignmentKey`. `InternalApi:ApiKey` no es requisito de arranque ni se valida en endpoints entrantes. Su valor, si se configura, solo se conserva como compatibilidad opcional del cliente saliente hacia Notifications; no autentica llamadas a DeviceManagment. Las reglas públicas de vinculación, desvinculación y consulta por cuidador principal no cambian.

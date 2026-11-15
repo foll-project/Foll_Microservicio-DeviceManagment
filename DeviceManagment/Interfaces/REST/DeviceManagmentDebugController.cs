@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using System.Text;
 using foll_device_managment.Shared.Infrastructure.Persistence.EFC.Configuration;
 using Microsoft.AspNetCore.Mvc;
@@ -6,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 namespace foll_device_managment.DeviceManagment.Interfaces.REST;
 
 [ApiController]
-[foll_device_managment.Shared.Infrastructure.Security.InternalApiKey]
+[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
 [ApiExplorerSettings(IgnoreApi = true)]
 [Route("api/device-managment/debug")]
 public class DeviceManagmentDebugController : ControllerBase

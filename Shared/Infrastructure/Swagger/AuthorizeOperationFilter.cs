@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using foll_device_managment.Shared.Infrastructure.Security;
 using Microsoft.OpenApi.Models;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
@@ -19,7 +20,9 @@ public sealed class AuthorizeOperationFilter : IOperationFilter
 
         var hasAuthorize = metadata.OfType<IAuthorizeData>().Any();
 
-        if (!hasAuthorize)
+        var hasAssignmentKey = metadata.OfType<EmergencyAssignmentKeyAttribute>().Any();
+
+        if (!hasAuthorize && !hasAssignmentKey)
         {
             return;
         }
@@ -52,7 +55,7 @@ public sealed class AuthorizeOperationFilter : IOperationFilter
                         Reference = new OpenApiReference
                         {
                             Type = ReferenceType.SecurityScheme,
-                            Id = "Bearer"
+                            Id = hasAssignmentKey ? "EmergencyAssignmentKey" : "Bearer"
                         }
                     }
                 ] = []
